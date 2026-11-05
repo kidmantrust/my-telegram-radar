@@ -2,41 +2,43 @@ import os
 import asyncio
 from telethon import TelegramClient, events
 import google.generativeai as genai
-import threading
 from flask import Flask
+from threading import Thread
 
-# --- МИНИ-СЕРВЕР ДЛЯ БЕСПЛАТНОГО ТАРИФА RENDER ---
+# Инициализация Flask (главный веб-сервер для Render)
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Radar is active!"
+    return "Radar is active and running!"
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+def run_telegram_bot():
+    api_id = 34960188
+    api_hash = 'd13bcdd634dab76cb5efddd1c8dba32b'
+    gemini_api_key = 'AQ...EmiA' # Твой ключ
 
-threading.Thread(target=run_web, daemon=True).start()
-# -----------------------------------------------
+    genai.configure(api_key=gemini_api_key)
+    ai_model = genai.GenerativeModel("gemini-1.5-flash")
 
-api_id = 34960188
-api_hash = 'd13bcdd634dab76cb5efddd1c8dba32b'
-gemini_api_key = 'AQ...EmiA' # Твой полный ключ
+    client = TelegramClient('radar_session', api_id, api_hash)
 
-genai.configure(api_key=gemini_api_key)
-ai_model = genai.GenerativeModel("gemini-1.5-flash")
+    @client.on(events.NewMessage)
+    async def handle_new_message(event):
+        print(f"Новое сообщение: {event.message.message}")
 
-client = TelegramClient('radar_session', api_id, api_hash)
+    async def main():
+        print("Telegram-радар запущен...")
+        await client.run_until_disconnected()
 
-@client.on(events.NewMessage(chats=[-100XXXXXXXXXX]))
-async def handle_new_message(event):
-    message_text = event.message.message
-    print(f"Новое сообщение: {message_text}")
-
-async def main():
-    print("Радар запущен и слушает чаты...")
-    await client.run_until_disconnected()
-
-if __name__ == '__main__':
     with client:
         client.loop.run_until_complete(main())
+
+if __name__ == '__main__':
+    # Запускаем Telegram-клиент в отдельном потоке в фоне
+    bot_thread = Thread(target=run_telegram_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+
+    # Веб-сервер работает в основном потоке и держит порт для Render
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
