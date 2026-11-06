@@ -1,44 +1,182 @@
 import os
 import asyncio
-from telethon import TelegramClient, events
-import google.generativeai as genai
+import logging
+import json
 from flask import Flask
 from threading import Thread
+from telethon import TelegramClient, events, errors
+from telethon.sessions import StringSession
+from google import genai
+from google.genai import types
 
-# Инициализация Flask (главный веб-сервер для Render)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+SESSION_STRING = os.getenv("SESSION_STRING", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+TARGET_CHANNEL = int(os.getenv("TARGET_CHANNEL", "0"))
+
+# Встроенный список чатов по всей США (Тракеры, Недвижимость, B2B-нетворкинг, Крупные хабы)
+DEFAULT_US_CHATS = [
+    # B2B, Экспертиза и Бизнес-партнерство
+    "MiamiBusinessChat", "ny_business_chat", "california_business", 
+    "usabusinesschat", "startups_usa", "relocate_usa_biz",
+    # Тракисты, Логистика и Диспетчеры
+    "usatc", "truckers_usa", "disp_usa", "auto_trans_usa",
+    # Недвижимость и Аренда (Депозиты / Лендлорды)
+    "ny_rent_apartments", "miami_rent_usa", "california_rent_us",
+    # Крупные живые хабы США
+    "russian_in_usa", "Miami_Chat_US", "NY_Chat_US", "LA_Chat_US"
+]
+
+RAW_ALLOWED = os.getenv("ALLOWED_CHATS", "")
+if RAW_ALLOWED.strip():
+    ALLOWED_CHATS = [c.strip() for c in RAW_ALLOWED.split(",") if c.strip()]
+else:
+    ALLOWED_CHATS = DEFAULT_US_CHATS
+
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
+seen_messages = set()
+
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Radar is active and running!"
+@app.route("/")
+def index():
+    return "Radar Bot Active", 200
 
-def run_telegram_bot():
-    api_id = 34960188
-    api_hash = 'd13bcdd634dab76cb5efddd1c8dba32b'
-    gemini_api_key = 'AQ...EmiA' # Твой ключ
+def run_flask():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
-    genai.configure(api_key=gemini_api_key)
-    ai_model = genai.GenerativeModel("gemini-1.5-flash")
+# Ключевые маркеры боли (Финансы + Залоги + B2B/Партнерство)
+TARGET_TRIGGERS = [
+    # Банки, переводы, блокировки
+    'zelle', 'wire', 'chase', 'bank of america', 'boa', 'wells fargo', 'td bank',
+    'заблокировали счет', 'счет закрыли', 'заморозили', 'fraud department', 'holding',
+    # Аренда и депозиты
+    'security deposit', 'депозит', 'лендлорд', 'eviction', 'выселение', 'lease', 'удержали',
+    # Подрядчики и логистика
+    'предоплату', 'подрядчик', 'contractor', 'накосячил', 'не возвращает', 'bounced check',
+    'убыток', 'страховка', 'claim', 'чарджбэк', 'chargeback', 'кинул', 'factoring',
+    # Бизнес-партнерство и эксперты
+    'партнер', 'партнерство', 'инвестор', 'инвестиции', 'ищу эксперта', 'нужен специалист',
+    'открыть бизнес', 'запуск в сша', 'соинвестор', 'b2b', 'стратегия', 'масштабирование'
+]
 
-    client = TelegramClient('radar_session', api_id, api_hash)
+def passes_strict_filter(text: str) -> bool:
+    text_lower = text.lower()
+    return any(trigger in text_lower for trigger in TARGET_TRIGGERS)
 
-    @client.on(events.NewMessage)
-    async def handle_new_message(event):
-        print(f"Новое сообщение: {event.message.message}")
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-    async def main():
-        print("Telegram-радар запущен...")
-        await client.run_until_disconnected()
+@client.on(events.NewMessage(incoming=True))
+async def handle_new_message(event):
+    try:
+        # Категорический запрет на личные сообщения
+        if event.is_private:
+            return
 
-    with client:
-        client.loop.run_until_complete(main())
+        chat = await event.get_chat()
+        chat_id = chat.id
+        chat_username = getattr(chat, 'username', None)
 
-if __name__ == '__main__':
-    # Запускаем Telegram-клиент в отдельном потоке в фоне
-    bot_thread = Thread(target=run_telegram_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
+        is_allowed = False
+        for allowed in ALLOWED_CHATS:
+            clean_allowed = str(allowed).lower().replace('@', '')
+            if str(allowed) == str(chat_id) or (chat_username and clean_allowed == chat_username.lower()):
+                is_allowed = True
+                break
+        
+        if not is_allowed:
+            return
 
-    # Веб-сервер работает в основном потоке и держит порт для Render
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+        message_text = event.raw_text
+        if not message_text or len(message_text.strip()) < 20:
+            return
+
+        if not passes_strict_filter(message_text):
+            return
+
+        msg_hash = hash(message_text[:300])
+        if msg_hash in seen_messages:
+            return
+        seen_messages.add(msg_hash)
+        if len(seen_messages) > 3000:
+            seen_messages.pop()
+
+        prompt = f"""
+Ты — эксперт-аналитик проблемных ситуаций и B2B-запросов в США.
+Проанализируй текст сообщения из чата. Твоя задача — определить, описывает ли человек конкретную БЕДУ/ПРОБЛЕМУ (зависшие деньги, блок счета, спор по депозиту, недобросовестный подрядчик, потеря груза/страховка) ИЛИ ищет партнера/местную экспертизу для бизнеса.
+
+СТРОГО ИГНОРИРУЙ:
+- Вакансии, поиск сотрудников на зарплату, предложения бытовой работы.
+- Прямую рекламу услуг, продавцов, риелторов, автодилеров.
+- Бытовую купли-продажу (мебель, авто, вещи).
+- Общий флуд и вопросы "где купить / как доехать".
+
+Если найдена реальная проблема или бизнес-запрос, верни JSON (без markdown):
+{{
+  "is_relevant": true,
+  "category": "Тип (Депозит / Блок счета / Подрядчик / Тракеры / B2B-Партнерство / Экспертиза)",
+  "problem_summary": "Суть запроса или проблемы (1-2 предложения).",
+  "diagnosis_pitch": "Короткий спокойный диагноз или профессиональная оценка ситуации без хвастовства, без юридических советов и без рекламных фраз ('я помогу/обращайтесь'). Дай оценку сути и логичный первый шаг для разбора."
+}}
+
+Если не подходит или спам:
+{{ "is_relevant": false }}
+
+Текст сообщения:
+""" + message_text
+
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json"
+            )
+        )
+
+        result = json.loads(response.text)
+        if not result.get("is_relevant", False):
+            return
+
+        if chat_username:
+            msg_link = f"https://t.me/{chat_username}/{event.id}"
+        else:
+            clean_id = str(chat_id).replace("-100", "")
+            msg_link = f"https://t.me/c/{clean_id}/{event.id}"
+
+        card = (
+            f"🎯 **ОБНАРУЖЕНА ЦЕЛЬ**\n\n"
+            f"📌 **Категория:** {result.get('category')}\n"
+            f"📍 **Чат:** {chat.title}\n\n"
+            f"📝 **Суть ситуации:**\n{result.get('problem_summary')}\n\n"
+            f"💡 **Диагноз / Ответ для связи:**\n"
+            f"`{result.get('diagnosis_pitch')}`\n\n"
+            f"🔗 [Перейти к сообщению]({msg_link})"
+        )
+
+        await client.send_message(TARGET_CHANNEL, card, link_preview=False)
+
+    except errors.FloodWaitError as e:
+        await asyncio.sleep(e.seconds)
+    except Exception as e:
+        logging.error(f"Ошибка обработки: {e}")
+
+async def main():
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    while True:
+        try:
+            await client.start()
+            await client.run_until_disconnected()
+        except Exception as e:
+            logging.error(f"Переподключение через 10 сек: {e}")
+            await asyncio.sleep(10)
+
+if __name__ == "__main__":
+    asyncio.run(main())
