@@ -9,21 +9,23 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.messages import ImportChatInviteRequest
 import google.generativeai as genai
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ==========================================
-# ФУНДАМЕНТАЛЬНЫЕ НАСТРОЙКИ (Всё в одном месте)
+# ФУНДАМЕНТАЛЬНЫЕ НАСТРОЙКИ (Жёстко в коде)
 # ==========================================
 API_ID = 21868351
 API_HASH = "9c4dfef0f9689e47265ea4e410a562ef"
 TARGET_CHANNEL = -100234567890  # ID твоего целевого канала для карточек
 
-# Твоя рабочая строка сессии и ключ Gemini
-SESSION_STRING = "1BVtsOzuBu50T5jEw0N8k7r7H5I2a7W1F9b3..." # Замени на свою рабочую строку, если менял
-GEMINI_API_KEY = "AIzaSy..." # Твой актуальный ключ Gemini API
+# Вставь сюда свою строку сессии Telegram (полученную один раз)
+SESSION_STRING = "ВСТАВЬ_СЮДА_СТРОКУ_СЕССИИ"
 
-# Закрытые инвайт-ссылки для автоматического входа при старте
+# Твой рабочий ключ Gemini API
+GEMINI_API_KEY = "AIzaSy..." 
+
+# Закрытый чат по инвайт-ссылке
 PRIVATE_INVITE_HASHES = ["WzV5NzWlyo40Y2E5"]
 # ==========================================
 
@@ -47,7 +49,7 @@ ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 seen_messages = set()
 
-# Flask сервер для поддержания жизни на Render
+# Flask сервер для поддержания активности на Render
 app = Flask(__name__)
 
 @app.route("/")
@@ -58,7 +60,7 @@ def run_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# Целевые триггеры для отсеивания шума
+# Целевые триггеры для отсеивания спама и мусора
 TARGET_TRIGGERS = [
     'zelle', 'wire', 'chase', 'bank of america', 'boa', 'wells fargo', 'td bank',
     'заблокировали счет', 'счет закрыли', 'заморозили', 'fraud department', 'holding',
@@ -175,7 +177,6 @@ async def handle_new_message(event):
         logging.error(f"Ошибка обработки: {e}")
 
 async def main():
-    # Запуск фонового Flask-сервера
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
@@ -184,18 +185,17 @@ async def main():
         try:
             await client.start()
             
-            # Автоматический вход в закрытые чаты по инвайтам
             for invite_hash in PRIVATE_INVITE_HASHES:
                 try:
                     await client(ImportChatInviteRequest(invite_hash))
                     logging.info(f"Успешный вход в приватный чат: {invite_hash}")
                 except Exception:
-                    pass  # Если уже в чате, пропускаем
+                    pass
 
-            logging.info("🚀 Радар успешно запущен и мониторит сеть...")
+            logging.info("🚀 Радар запущен и работает в штатном режиме...")
             await client.run_until_disconnected()
         except Exception as e:
-            logging.error(f"Сбой подключения, повтор через 10 сек: {e}")
+            logging.error(f"Переподключение через 10 сек: {e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
