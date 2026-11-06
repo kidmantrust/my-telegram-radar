@@ -10,11 +10,12 @@ import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-SESSION_STRING = os.getenv("SESSION_STRING", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-TARGET_CHANNEL = int(os.getenv("TARGET_CHANNEL", "0"))
+# Все ключи вшиты напрямую, чтобы ничего не настраивать на Render
+API_ID = 21868351
+API_HASH = "9c4dfef0f9689e47265ea4e410a562ef"
+SESSION_STRING = "1BVtsOzuBu50T5jEw0N8k7r7H5I2a7W1F9b3..." # Здесь твоя полная строка сессии
+GEMINI_API_KEY = "AIzaSy..." # Здесь твой рабочий ключ Gemini API
+TARGET_CHANNEL = -100234567890 # ID твоего целевого канала
 
 DEFAULT_US_CHATS = [
     # B2B, Экспертиза и Бизнес-партнерство
@@ -28,11 +29,7 @@ DEFAULT_US_CHATS = [
     "russian_in_usa", "Miami_Chat_US", "NY_Chat_US", "LA_Chat_US"
 ]
 
-RAW_ALLOWED = os.getenv("ALLOWED_CHATS", "")
-if RAW_ALLOWED.strip():
-    ALLOWED_CHATS = [c.strip() for c in RAW_ALLOWED.split(",") if c.strip()]
-else:
-    ALLOWED_CHATS = DEFAULT_US_CHATS
+ALLOWED_CHATS = DEFAULT_US_CHATS
 
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
