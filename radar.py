@@ -11,11 +11,11 @@ import google.generativeai as genai
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ==========================================
-# КОНФИГУРАЦИЯ БОТА (Через Bot API токен)
+# ФУНДАМЕНТАЛЬНЫЕ НАСТРОЙКИ (Всё на месте)
 # ==========================================
 TELEGRAM_BOT_TOKEN = "9223838955:AAEd_wxYQfmQzpB6ZmLx7oJ3YqMCyiTkJmw"
-TARGET_CHANNEL = -100234567890  # ID твоего целевого канала для карточек
-GEMINI_API_KEY = "AIzaSy..."    # Твой ключ Gemini API (если еще не зашит)
+TARGET_CHANNEL = 8768875698  # Твой личный ID в Telegram для карточек
+GEMINI_API_KEY = "AQ.Ab8RN6LXL64AGRJpmlB6zqKUGK3u5l2FXKGIP5pg5W0aBquLqw"
 # ==========================================
 
 # Инициализация Gemini
@@ -35,7 +35,7 @@ def run_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# Функция отправки сообщения в целевой канал через HTTP API Telegram
+# Функция отправки карточки в ЛС через Bot API
 def send_to_channel(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -47,9 +47,9 @@ def send_to_channel(text):
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        logging.error(f"Ошибка отправки в канал: {e}")
+        logging.error(f"Ошибка отправки: {e}")
 
-# Целевые триггеры для фильтрации
+# Целевые триггеры для фильтрации мусора
 TARGET_TRIGGERS = [
     'zelle', 'wire', 'chase', 'bank of america', 'boa', 'wells fargo', 'td bank',
     'заблокировали счет', 'счет закрыли', 'заморозили', 'fraud department', 'holding',
@@ -136,10 +136,10 @@ def process_message(chat_title, chat_username, message_text, message_id):
 
     send_to_channel(card)
 
-# Главный цикл опроса Telegram Bot API (Long Polling)
+# Главный цикл опроса Telegram Bot API
 def run_telegram_bot():
     offset = 0
-    logging.info("🚀 Бот-радар запущен и слушает обновления через Telegram API...")
+    logging.info("🚀 Бот-радар запущен и мониторит сеть...")
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
@@ -150,7 +150,6 @@ def run_telegram_bot():
                 for update in data.get("result", []):
                     offset = update["update_id"] + 1
                     
-                    # Проверяем наличие текстового сообщения из группы/чата
                     message = update.get("message") or update.get("channel_post") or update.get("edited_message")
                     if message:
                         chat = message.get("chat", {})
@@ -169,10 +168,8 @@ def run_telegram_bot():
             time.sleep(5)
 
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке (для Render)
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Запускаем бота
     run_telegram_bot()
