@@ -2,46 +2,21 @@ import os
 import asyncio
 import logging
 import json
+import requests
 from flask import Flask
 from threading import Thread
-from telethon import TelegramClient, events, errors
-from telethon.sessions import StringSession
-from telethon.tl.functions.messages import ImportChatInviteRequest
 import google.generativeai as genai
 
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ==========================================
-# ФУНДАМЕНТАЛЬНЫЕ НАСТРОЙКИ (Жёстко в коде)
+# КОНФИГУРАЦИЯ БОТА (Через Bot API токен)
 # ==========================================
-API_ID = 21868351
-API_HASH = "9c4dfef0f9689e47265ea4e410a562ef"
+TELEGRAM_BOT_TOKEN = "9223838955:AAEd_wxYQfmQzpB6ZmLx7oJ3YqMCyiTkJmw"
 TARGET_CHANNEL = -100234567890  # ID твоего целевого канала для карточек
-
-# Вставь сюда свою строку сессии Telegram (полученную один раз)
-SESSION_STRING = "ВСТАВЬ_СЮДА_СТРОКУ_СЕССИИ"
-
-# Твой рабочий ключ Gemini API
-GEMINI_API_KEY = "AIzaSy..." 
-
-# Закрытый чат по инвайт-ссылке
-PRIVATE_INVITE_HASHES = ["WzV5NzWlyo40Y2E5"]
+GEMINI_API_KEY = "AIzaSy..."    # Твой ключ Gemini API (если еще не зашит)
 # ==========================================
-
-DEFAULT_US_CHATS = [
-    # B2B, Экспертиза и Бизнес-партнерство
-    "MiamiBusinessChat", "ny_business_chat", "california_business", 
-    "usabusinesschat", "startups_usa", "relocate_usa_biz",
-    # Тракисты, Логистика и Диспетчеры
-    "usatc", "truckers_usa", "disp_usa", "auto_trans_usa",
-    # Недвижимость и Аренда (Депозиты / Лендлорды)
-    "ny_rent_apartments", "miami_rent_usa", "california_rent_us",
-    # Крупные живые хабы США
-    "russian_in_usa", "Miami_Chat_US", "NY_Chat_US", "LA_Chat_US"
-]
-
-ALLOWED_CHATS = DEFAULT_US_CHATS
 
 # Инициализация Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -60,7 +35,21 @@ def run_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# Целевые триггеры для отсеивания спама и мусора
+# Функция отправки сообщения в целевой канал через HTTP API Telegram
+def send_to_channel(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TARGET_CHANNEL,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"Ошибка отправки в канал: {e}")
+
+# Целевые триггеры для фильтрации
 TARGET_TRIGGERS = [
     'zelle', 'wire', 'chase', 'bank of america', 'boa', 'wells fargo', 'td bank',
     'заблокировали счет', 'счет закрыли', 'заморозили', 'fraud department', 'holding',
@@ -75,43 +64,21 @@ def passes_strict_filter(text: str) -> bool:
     text_lower = text.lower()
     return any(trigger in text_lower for trigger in TARGET_TRIGGERS)
 
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+def process_message(chat_title, chat_username, message_text, message_id):
+    if not message_text or len(message_text.strip()) < 20:
+        return
 
-@client.on(events.NewMessage(incoming=True))
-async def handle_new_message(event):
-    try:
-        if event.is_private:
-            return
+    if not passes_strict_filter(message_text):
+        return
 
-        chat = await event.get_chat()
-        chat_id = chat.id
-        chat_username = getattr(chat, 'username', None)
+    msg_hash = hash(message_text[:300])
+    if msg_hash in seen_messages:
+        return
+    seen_messages.add(msg_hash)
+    if len(seen_messages) > 3000:
+        seen_messages.pop()
 
-        is_allowed = False
-        for allowed in ALLOWED_CHATS:
-            clean_allowed = str(allowed).lower().replace('@', '')
-            if str(allowed) == str(chat_id) or (chat_username and clean_allowed == chat_username.lower()):
-                is_allowed = True
-                break
-        
-        if not is_allowed:
-            return
-
-        message_text = event.raw_text
-        if not message_text or len(message_text.strip()) < 20:
-            return
-
-        if not passes_strict_filter(message_text):
-            return
-
-        msg_hash = hash(message_text[:300])
-        if msg_hash in seen_messages:
-            return
-        seen_messages.add(msg_hash)
-        if len(seen_messages) > 3000:
-            seen_messages.pop()
-
-        prompt = f"""
+    prompt = f"""
 Ты — эксперт-аналитик проблемных ситуаций и B2B-запросов в США.
 Проанализируй текст сообщения из чата. Твоя задача — определить, описывает ли человек конкретную БЕДУ/ПРОБЛЕМУ (зависшие деньги, блок счета, спор по депозиту, недобросовестный подрядчик, потеря груза/страховка) ИЛИ ищет партнера/местную экспертизу для бизнеса.
 
@@ -135,68 +102,77 @@ async def handle_new_message(event):
 Текст сообщения:
 """ + message_text
 
+    try:
         response = ai_model.generate_content(
             prompt,
             generation_config={"temperature": 0.1, "response_mime_type": "application/json"}
         )
+        result_text = response.text.strip()
+        if result_text.startswith("```json"):
+            result_text = result_text[7:]
+        if result_text.endswith("```"):
+            result_text = result_text[:-3]
+        result = json.loads(result_text.strip())
+    except Exception:
+        return
 
+    if not result.get("is_relevant", False):
+        return
+
+    if chat_username:
+        msg_link = f"https://t.me/{chat_username}/{message_id}"
+    else:
+        msg_link = f"https://t.me"
+
+    card = (
+        f"🎯 **ОБНАРУЖЕНА ЦЕЛЬ**\n\n"
+        f"📌 **Категория:** {result.get('category')}\n"
+        f"📍 **Чат:** {chat_title}\n\n"
+        f"📝 **Суть ситуации:**\n{result.get('problem_summary')}\n\n"
+        f"💡 **Диагноз / Ответ для связи:**\n"
+        f"`{result.get('diagnosis_pitch')}`\n\n"
+        f"🔗 [Перейти к сообщению]({msg_link})"
+    )
+
+    send_to_channel(card)
+
+# Главный цикл опроса Telegram Bot API (Long Polling)
+def run_telegram_bot():
+    offset = 0
+    logging.info("🚀 Бот-радар запущен и слушает обновления через Telegram API...")
+    while True:
         try:
-            result_text = response.text.strip()
-            if result_text.startswith("```json"):
-                result_text = result_text[7:]
-            if result_text.endswith("```"):
-                result_text = result_text[:-3]
-            result = json.loads(result_text.strip())
-        except Exception:
-            return
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+            response = requests.get(url, timeout=35)
+            data = response.json()
+            
+            if data.get("ok"):
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    
+                    # Проверяем наличие текстового сообщения из группы/чата
+                    message = update.get("message") or update.get("channel_post") or update.get("edited_message")
+                    if message:
+                        chat = message.get("chat", {})
+                        chat_type = chat.get("type", "")
+                        
+                        if chat_type in ["group", "supergroup", "channel"]:
+                            chat_title = chat.get("title", "Чат")
+                            chat_username = chat.get("username")
+                            text = message.get("text") or message.get("caption", "")
+                            msg_id = message.get("message_id")
+                            
+                            process_message(chat_title, chat_username, text, msg_id)
+        except Exception as e:
+            logging.error(f"Ошибка в цикле бота: {e}")
+            import time
+            time.sleep(5)
 
-        if not result.get("is_relevant", False):
-            return
-
-        if chat_username:
-            msg_link = f"https://t.me/{chat_username}/{event.id}"
-        else:
-            clean_id = str(chat_id).replace("-100", "")
-            msg_link = f"https://t.me/c/{clean_id}/{event.id}"
-
-        card = (
-            f"🎯 **ОБНАРУЖЕНА ЦЕЛЬ**\n\n"
-            f"📌 **Категория:** {result.get('category')}\n"
-            f"📍 **Чат:** {chat.title}\n\n"
-            f"📝 **Суть ситуации:**\n{result.get('problem_summary')}\n\n"
-            f"💡 **Диагноз / Ответ для связи:**\n"
-            f"`{result.get('diagnosis_pitch')}`\n\n"
-            f"🔗 [Перейти к сообщению]({msg_link})"
-        )
-
-        await client.send_message(TARGET_CHANNEL, card, link_preview=False)
-
-    except errors.FloodWaitError as e:
-        await asyncio.sleep(e.seconds)
-    except Exception as e:
-        logging.error(f"Ошибка обработки: {e}")
-
-async def main():
+if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке (для Render)
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    while True:
-        try:
-            await client.start()
-            
-            for invite_hash in PRIVATE_INVITE_HASHES:
-                try:
-                    await client(ImportChatInviteRequest(invite_hash))
-                    logging.info(f"Успешный вход в приватный чат: {invite_hash}")
-                except Exception:
-                    pass
-
-            logging.info("🚀 Радар запущен и работает в штатном режиме...")
-            await client.run_until_disconnected()
-        except Exception as e:
-            logging.error(f"Переподключение через 10 сек: {e}")
-            await asyncio.sleep(10)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    # Запускаем бота
+    run_telegram_bot()
