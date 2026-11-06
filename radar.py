@@ -6,8 +6,7 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -17,7 +16,6 @@ SESSION_STRING = os.getenv("SESSION_STRING", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 TARGET_CHANNEL = int(os.getenv("TARGET_CHANNEL", "0"))
 
-# Встроенный список чатов по всей США (Тракеры, Недвижимость, B2B-нетворкинг, Крупные хабы)
 DEFAULT_US_CHATS = [
     # B2B, Экспертиза и Бизнес-партнерство
     "MiamiBusinessChat", "ny_business_chat", "california_business", 
@@ -36,7 +34,9 @@ if RAW_ALLOWED.strip():
 else:
     ALLOWED_CHATS = DEFAULT_US_CHATS
 
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
+
 seen_messages = set()
 
 app = Flask(__name__)
@@ -49,17 +49,12 @@ def run_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# Ключевые маркеры боли (Финансы + Залоги + B2B/Партнерство)
 TARGET_TRIGGERS = [
-    # Банки, переводы, блокировки
     'zelle', 'wire', 'chase', 'bank of america', 'boa', 'wells fargo', 'td bank',
     'заблокировали счет', 'счет закрыли', 'заморозили', 'fraud department', 'holding',
-    # Аренда и депозиты
     'security deposit', 'депозит', 'лендлорд', 'eviction', 'выселение', 'lease', 'удержали',
-    # Подрядчики и логистика
     'предоплату', 'подрядчик', 'contractor', 'накосячил', 'не возвращает', 'bounced check',
     'убыток', 'страховка', 'claim', 'чарджбэк', 'chargeback', 'кинул', 'factoring',
-    # Бизнес-партнерство и эксперты
     'партнер', 'партнерство', 'инвестор', 'инвестиции', 'ищу эксперта', 'нужен специалист',
     'открыть бизнес', 'запуск в сша', 'соинвестор', 'b2b', 'стратегия', 'масштабирование'
 ]
@@ -73,7 +68,6 @@ client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 @client.on(events.NewMessage(incoming=True))
 async def handle_new_message(event):
     try:
-        # Категорический запрет на личные сообщения
         if event.is_private:
             return
 
@@ -129,16 +123,21 @@ async def handle_new_message(event):
 Текст сообщения:
 """ + message_text
 
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="application/json"
-            )
+        response = ai_model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.1, "response_mime_type": "application/json"}
         )
 
-        result = json.loads(response.text)
+        try:
+            result_text = response.text.strip()
+            if result_text.startswith("```json"):
+                result_text = result_text[7:]
+            if result_text.endswith("```"):
+                result_text = result_text[:-3]
+            result = json.loads(result_text.strip())
+        except Exception:
+            return
+
         if not result.get("is_relevant", False):
             return
 
